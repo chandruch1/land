@@ -1,0 +1,5 @@
+[functions.pinata-upload]
+verify_jwt = false
+
+
+

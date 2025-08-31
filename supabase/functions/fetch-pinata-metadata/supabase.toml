@@ -1,0 +1,5 @@
+[functions.fetch-pinata-metadata]
+verify_jwt = false
+
+
+
