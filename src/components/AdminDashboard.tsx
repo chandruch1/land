@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/enhanced-button';
 import { Input } from '@/components/ui/input';
@@ -45,10 +45,6 @@ const AdminDashboard = () => {
   });
 
   const [isTokenizing, setIsTokenizing] = useState(false);
-  const [priceUpdateForm, setPriceUpdateForm] = useState({
-    parcelId: '',
-    newPrice: ''
-  });
   const [parcels, setParcels] = useState<TokenizedParcel[]>(() => getParcels());
   const [currentPrices, setCurrentPrices] = useState<Record<string, number>>(() => {
     const prices = getPrices();
@@ -59,6 +55,16 @@ const AdminDashboard = () => {
     return priceMap;
   });
 
+  // Function to refresh current prices from storage
+  const refreshCurrentPrices = () => {
+    const prices = getPrices();
+    const priceMap: Record<string, number> = {};
+    Object.keys(prices).forEach(parcelId => {
+      priceMap[parcelId] = prices[parcelId].currentPrice;
+    });
+    setCurrentPrices(priceMap);
+  };
+
   const { data: landBalance } = useReadContract({
     abi: [
       { "type":"function","name":"balanceOf","stateMutability":"view","inputs":[{"name":"account","type":"address"}],"outputs":[{"name":"","type":"uint256"}] }
@@ -68,9 +74,30 @@ const AdminDashboard = () => {
     args: [address ?? '0x0000000000000000000000000000000000000000'],
   });
 
+  // Listen for storage changes to refresh data
+  useEffect(() => {
+    const handleStorageChange = () => {
+      refreshCurrentPrices();
+      setParcels(getParcels());
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
   // Function to get current price from state
   const getCurrentPrice = (parcelId: string) => {
-    return currentPrices[parcelId] ?? getPriceOrDefault(parcelId, 2);
+    // First check the current prices state (most up-to-date)
+    if (currentPrices[parcelId] !== undefined) {
+      return currentPrices[parcelId];
+    }
+    
+    // Fall back to storage if not in state
+    const storedPrice = getPriceOrDefault(parcelId, 2);
+    return storedPrice;
   };
 
   const handleDisconnect = () => {
@@ -207,41 +234,6 @@ const AdminDashboard = () => {
     
     // Smart contract interaction would go here
     console.log('Withdrawing fees');
-  };
-
-  const handleUpdatePrice = () => {
-    if (!priceUpdateForm.parcelId || !priceUpdateForm.newPrice) {
-      toast({
-        title: "Error",
-        description: "Please fill in all fields",
-        variant: "destructive",
-      });
-      return;
-    }
-    
-    const newPrice = parseFloat(priceUpdateForm.newPrice);
-    if (isNaN(newPrice) || newPrice <= 0) {
-      toast({
-        title: "Error",
-        description: "Please enter a valid price",
-        variant: "destructive",
-      });
-      return;
-    }
-    
-    setPrice(priceUpdateForm.parcelId, newPrice);
-    setPriceUpdateForm({ parcelId: '', newPrice: '' });
-    
-    // Update the current prices state to trigger re-render
-    setCurrentPrices(prev => ({
-      ...prev,
-      [priceUpdateForm.parcelId]: newPrice
-    }));
-    
-    toast({
-      title: "Price Updated",
-      description: `Price for parcel #${priceUpdateForm.parcelId} set to ${newPrice} LAND`,
-    });
   };
 
   const adminActions = [
@@ -462,46 +454,6 @@ const AdminDashboard = () => {
             </CardContent>
           </Card>
         </div>
-
-        {/* Price Management */}
-        <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300 mt-8">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-gray-900">
-              <DollarSign className="w-5 h-5" />
-              Update Land Prices
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid md:grid-cols-3 gap-4">
-              <div>
-                <Label htmlFor="updateParcelId" className="text-gray-900">Parcel ID</Label>
-                <Input
-                  id="updateParcelId"
-                  placeholder="e.g., 1"
-                  value={priceUpdateForm.parcelId}
-                  onChange={(e) => setPriceUpdateForm(prev => ({ ...prev, parcelId: e.target.value }))}
-                  className="bg-gray-50 border-gray-300 focus:border-gray-900 focus:ring-gray-900"
-                />
-              </div>
-              <div>
-                <Label htmlFor="newPrice" className="text-gray-900">New Price per Unit (LAND)</Label>
-                <Input
-                  id="newPrice"
-                  type="number"
-                  placeholder="e.g., 2"
-                  value={priceUpdateForm.newPrice}
-                  onChange={(e) => setPriceUpdateForm(prev => ({ ...prev, newPrice: e.target.value }))}
-                  className="bg-gray-50 border-gray-300 focus:border-gray-900 focus:ring-gray-900"
-                />
-              </div>
-              <div className="flex items-end">
-                <Button variant="default" className="w-full bg-gray-900 text-white hover:bg-gray-800" onClick={handleUpdatePrice}>
-                  Update Price
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
 
         {/* Land Parcels Table */}
         <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300 mt-8">

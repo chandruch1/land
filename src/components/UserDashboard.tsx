@@ -103,9 +103,31 @@ const UserDashboard = () => {
     };
     window.addEventListener('storage', handleStorageChange);
     
+    // Listen for custom price update events from AdminDashboard
+    const handlePriceUpdate = (event: CustomEvent) => {
+      const { parcelId, newPrice } = event.detail;
+      
+      // Update the current prices state immediately
+      setCurrentPrices(prev => ({
+        ...prev,
+        [parcelId]: newPrice
+      }));
+      
+      // Also refresh all data to ensure consistency
+      loadData();
+      
+      // Force a re-render of computed values
+      setTimeout(() => {
+        const event = new Event('storage');
+        window.dispatchEvent(event);
+      }, 100);
+    };
+    window.addEventListener('priceUpdated', handlePriceUpdate as EventListener);
+    
     return () => {
       clearInterval(interval);
       window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('priceUpdated', handlePriceUpdate as EventListener);
     };
   }, []);
 
@@ -154,14 +176,17 @@ const UserDashboard = () => {
   const availableLands = useMemo(() => {
     return parcels
       .filter(p => (p.remainingUnits ?? p.units) > 0)
-      .map(land => ({
-        id: land.id,
-        location: land.location,
-        acres: land.acres,
-        pricePerUnit: getPriceOrDefault(land.id, 2),
-        availableUnits: land.remainingUnits ?? land.units,
-        totalUnits: land.units
-      }));
+      .map(land => {
+        const price = getPriceOrDefault(land.id, 2);
+        return {
+          id: land.id,
+          location: land.location,
+          acres: land.acres,
+          pricePerUnit: price,
+          availableUnits: land.remainingUnits ?? land.units,
+          totalUnits: land.units
+        };
+      });
   }, [parcels, currentPrices]);
 
   // Get all available sell orders from other users
@@ -681,6 +706,10 @@ const UserDashboard = () => {
     
     // Clear all order forms when refreshing
     setOrderForms({});
+    
+    // Force refresh of all computed values
+    const event = new Event('storage');
+    window.dispatchEvent(event);
     
     toast({
       title: "Data Refreshed",
