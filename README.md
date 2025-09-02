@@ -60,6 +60,7 @@ This project is built with:
 - React
 - shadcn-ui
 - Tailwind CSS
+- Solidity
 
 ## How can I deploy this project?
 
