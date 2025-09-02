@@ -1,15 +1,17 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAccount } from 'wagmi';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/enhanced-button';
 import WalletConnect from '@/components/WalletConnect';
 import { ADMIN_WALLET } from '@/config/wagmi';
-import { Landmark, TrendingUp, Shield, Users, ArrowRight, CheckCircle, Star } from 'lucide-react';
+import { Landmark, TrendingUp, Shield, Users, ArrowRight, CheckCircle, Star, Layers, Lock, FileText, Globe, ListOrdered } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 const LandingPage = () => {
   const { address, isConnected } = useAccount();
   const navigate = useNavigate();
+  const [isLearnMoreOpen, setIsLearnMoreOpen] = useState(false);
 
   useEffect(() => {
     if (isConnected && address) {
@@ -120,7 +122,7 @@ const LandingPage = () => {
           {!isConnected && (
             <div className="flex flex-col sm:flex-row gap-4 justify-center items-center animate-fade-in delay-500">
               <WalletConnect />
-              <Button variant="outline" size="xl" className="gap-2 border-gray-300 text-gray-700 hover:bg-gray-50">
+              <Button variant="outline" size="xl" className="gap-2 border-gray-300 text-gray-700 hover:bg-gray-50" onClick={() => setIsLearnMoreOpen(true)}>
                 Learn More
                 <ArrowRight className="w-5 h-5" />
               </Button>
@@ -217,6 +219,80 @@ const LandingPage = () => {
           </Card>
         </div>
       </div>
+
+      {/* Learn More Modal */}
+      <Dialog open={isLearnMoreOpen} onOpenChange={setIsLearnMoreOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-gray-900">
+              <Layers className="w-5 h-5" />
+              Understanding Fractionalization of Land Assets
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-6 text-gray-700">
+            <p>
+              Fractionalization divides a single piece of real estate into smaller, affordable digital units, or tokens. Each token
+              represents a fractional share of ownership recorded securely on a blockchain.
+            </p>
+
+            <div className="grid md:grid-cols-3 gap-4">
+              <div className="p-4 rounded-lg bg-gray-50 border border-gray-200">
+                <div className="flex items-center gap-2 mb-2 text-gray-900 font-semibold">
+                  <FileText className="w-4 h-4" />
+                  Tokenization
+                </div>
+                <p className="text-sm">
+                  Convert a physical asset (land) into digital tokens. Each token is like a share that represents a portion of the property.
+                </p>
+              </div>
+              <div className="p-4 rounded-lg bg-gray-50 border border-gray-200">
+                <div className="flex items-center gap-2 mb-2 text-gray-900 font-semibold">
+                  <Lock className="w-4 h-4" />
+                  Blockchain Technology
+                </div>
+                <ul className="text-sm list-disc list-inside space-y-1">
+                  <li><span className="font-medium">Transparency</span>: Public ledger visible to everyone.</li>
+                  <li><span className="font-medium">Security</span>: Decentralized and resistant to fraud.</li>
+                  <li><span className="font-medium">Immutability</span>: Records are permanent and tamper-proof.</li>
+                </ul>
+              </div>
+              <div className="p-4 rounded-lg bg-gray-50 border border-gray-200">
+                <div className="flex items-center gap-2 mb-2 text-gray-900 font-semibold">
+                  <CheckCircle className="w-4 h-4" />
+                  Smart Contracts
+                </div>
+                <p className="text-sm">
+                  Self-executing code automates buying, selling, and distribution of income to token holders without intermediaries.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-lg bg-white border border-gray-200">
+              <div className="font-semibold text-gray-900 mb-2">Benefits for Investors</div>
+              <ul className="text-sm grid md:grid-cols-2 gap-2">
+                <li className="flex items-start gap-2"><TrendingUp className="w-4 h-4 mt-0.5" /> Increased Liquidity: Trade fractions faster than whole properties.</li>
+                <li className="flex items-start gap-2"><Users className="w-4 h-4 mt-0.5" /> Diversification: Own small shares across many properties.</li>
+                <li className="flex items-start gap-2"><Landmark className="w-4 h-4 mt-0.5" /> Reduced Barriers: Invest with smaller amounts.</li>
+                <li className="flex items-start gap-2"><Globe className="w-4 h-4 mt-0.5" /> Global Access: Participate from anywhere in the world.</li>
+              </ul>
+            </div>
+
+            <div className="p-4 rounded-lg bg-white border border-gray-200">
+              <div className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                <ListOrdered className="w-4 h-4" />
+                How It Works: Step-by-Step
+              </div>
+              <ol className="list-decimal list-inside space-y-1 text-sm">
+                <li>Asset Vetting: Identify a valuable piece of land.</li>
+                <li>Legal Structuring: Set up documents and an SPV to hold the asset.</li>
+                <li>Token Creation: Mint a fixed number of tokens on the blockchain.</li>
+                <li>Token Sale: Offer tokens to investors for crypto or fiat.</li>
+                <li>Ongoing Management: Smart contracts distribute income to holders.</li>
+              </ol>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
