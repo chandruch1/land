@@ -1,3 +1,5 @@
+Land share app link : https://landshare-protocol.vercel.app/
+
 Land Fractionalization 🌍✨
 
 The Landshare Protocol is an innovative project using blockchain technology to fractionalize land assets 🏞️, enabling secure, transparent, and accessible real estate investments for all 🚀. It leverages a modern stack—including Vite ⚡, TypeScript ✍️, React ⚛️, shadcn-ui 🎨, Tailwind CSS 💨, and Solidity 📜—to deliver a high-performance decentralized application.
