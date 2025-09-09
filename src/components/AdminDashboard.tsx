@@ -8,8 +8,8 @@ import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { pinJsonToIPFS } from '@/config/pinata';
 import { LAND_TOKEN } from '@/config/wagmi';
-import { addParcel, getParcels, type TokenizedParcel } from '@/lib/parcels';
-import { setPrice, getPriceOrDefault, getPrices } from '@/lib/trades';
+import { addParcel, getParcels, getParcelsSync, type TokenizedParcel, refreshParcelsFromIPFS } from '@/lib/parcels';
+import { setPrice, getPriceOrDefault, getPriceOrDefaultSync, getPrices, getPricesSync, refreshPricesFromIPFS } from '@/lib/trades';
 import { 
   Landmark, 
   Settings, 
@@ -18,7 +18,8 @@ import {
   FileText,
   LogOut,
   Upload,
-  ToggleLeft
+  ToggleLeft,
+  RefreshCw
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { removeParcel } from '@/lib/parcels';
@@ -45,9 +46,10 @@ const AdminDashboard = () => {
   });
 
   const [isTokenizing, setIsTokenizing] = useState(false);
-  const [parcels, setParcels] = useState<TokenizedParcel[]>(() => getParcels());
+  const [isLoadingData, setIsLoadingData] = useState(false);
+  const [parcels, setParcels] = useState<TokenizedParcel[]>(() => getParcelsSync());
   const [currentPrices, setCurrentPrices] = useState<Record<string, number>>(() => {
-    const prices = getPrices();
+    const prices = getPricesSync();
     const priceMap: Record<string, number> = {};
     Object.keys(prices).forEach(parcelId => {
       priceMap[parcelId] = prices[parcelId].currentPrice;
@@ -55,9 +57,73 @@ const AdminDashboard = () => {
     return priceMap;
   });
 
+  // Load data from IPFS with fallback to localStorage
+  const loadData = async () => {
+    setIsLoadingData(true);
+    try {
+      // Load parcels from IPFS first, fallback to sync version
+      const allParcels = await getParcels().catch(() => getParcelsSync());
+      setParcels(allParcels);
+      
+      // Load prices from IPFS first, fallback to sync version
+      const prices = await getPrices().catch(() => getPricesSync());
+      const priceMap: Record<string, number> = {};
+      Object.keys(prices).forEach(parcelId => {
+        priceMap[parcelId] = prices[parcelId].currentPrice;
+      });
+      setCurrentPrices(priceMap);
+    } catch (error) {
+      console.error('Error loading data:', error);
+      // Fallback to sync versions
+      setParcels(getParcelsSync());
+      const prices = getPricesSync();
+      const priceMap: Record<string, number> = {};
+      Object.keys(prices).forEach(parcelId => {
+        priceMap[parcelId] = prices[parcelId].currentPrice;
+      });
+      setCurrentPrices(priceMap);
+    } finally {
+      setIsLoadingData(false);
+    }
+  };
+
+  // Force refresh data from IPFS
+  const refreshDataFromIPFS = async () => {
+    setIsLoadingData(true);
+    try {
+      // Force refresh from IPFS
+      const [refreshedParcels, refreshedPrices] = await Promise.all([
+        refreshParcelsFromIPFS(),
+        refreshPricesFromIPFS()
+      ]);
+      
+      setParcels(refreshedParcels);
+      
+      const priceMap: Record<string, number> = {};
+      Object.keys(refreshedPrices).forEach(parcelId => {
+        priceMap[parcelId] = refreshedPrices[parcelId].currentPrice;
+      });
+      setCurrentPrices(priceMap);
+      
+      toast({
+        title: "Data Refreshed",
+        description: "Successfully synced latest data from IPFS",
+      });
+    } catch (error) {
+      console.error('Error refreshing from IPFS:', error);
+      toast({
+        title: "Refresh Failed",
+        description: "Could not sync from IPFS, using local data",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingData(false);
+    }
+  };
+
   // Function to refresh current prices from storage
-  const refreshCurrentPrices = () => {
-    const prices = getPrices();
+  const refreshCurrentPrices = async () => {
+    const prices = await getPrices().catch(() => getPricesSync());
     const priceMap: Record<string, number> = {};
     Object.keys(prices).forEach(parcelId => {
       priceMap[parcelId] = prices[parcelId].currentPrice;
@@ -74,17 +140,22 @@ const AdminDashboard = () => {
     args: [address ?? '0x0000000000000000000000000000000000000000'],
   });
 
-  // Listen for storage changes to refresh data
+  // Listen for storage changes to refresh data and load data on mount
   useEffect(() => {
+    loadData();
+    
     const handleStorageChange = () => {
-      refreshCurrentPrices();
-      setParcels(getParcels());
+      loadData();
     };
     
     window.addEventListener('storage', handleStorageChange);
     
+    // Refresh data every 30 seconds
+    const interval = setInterval(loadData, 30000);
+    
     return () => {
       window.removeEventListener('storage', handleStorageChange);
+      clearInterval(interval);
     };
   }, []);
 
@@ -96,7 +167,7 @@ const AdminDashboard = () => {
     }
     
     // Fall back to storage if not in state
-    const storedPrice = getPriceOrDefault(parcelId, 2);
+    const storedPrice = getPriceOrDefaultSync(parcelId, 2);
     return storedPrice;
   };
 
@@ -178,7 +249,7 @@ const AdminDashboard = () => {
           [newParcel.id]: pricePerUnit
         }));
         
-        setParcels(getParcels());
+        setParcels(getParcelsSync());
 
         toast({
           title: "Land Tokenized Successfully",
@@ -511,7 +582,7 @@ const AdminDashboard = () => {
                               <div className="pt-2">
                                 <Button
                                   variant="destructive"
-                                  onClick={() => { removeParcel(land.id); setParcels(getParcels()); }}
+                                  onClick={() => { removeParcel(land.id); setParcels(getParcelsSync()); }}
                                 >
                                   Delete Parcel (local)
                                 </Button>

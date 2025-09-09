@@ -10,8 +10,8 @@ import { LAND_TOKEN } from '@/config/wagmi';
 import { formatUnits, parseUnits } from 'viem';
 import { sepolia } from 'wagmi/chains';
 import { Landmark, TrendingUp, DollarSign, Users, LogOut, Eye, ShoppingCart, RefreshCw, Plus, List, Clock, Hash } from 'lucide-react';
-import { getParcels, type TokenizedParcel, decrementParcelUnits } from '@/lib/parcels';
-import { getTrades, getUserTrades, addTrade, getPriceOrDefault, getPrices, updateOrderUnits, removeOrder } from '@/lib/trades';
+import { getParcels, getParcelsSync, type TokenizedParcel, decrementParcelUnits, refreshParcelsFromIPFS } from '@/lib/parcels';
+import { getTrades, getTradesSync, getUserTrades, getUserTradesSync, addTrade, getPriceOrDefault, getPriceOrDefaultSync, getPrices, getPricesSync, updateOrderUnits, removeOrder, refreshTradesFromIPFS, refreshPricesFromIPFS } from '@/lib/trades';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 
 const UserDashboard = () => {
@@ -39,6 +39,7 @@ const UserDashboard = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedInvestment, setSelectedInvestment] = useState<any>(null);
   const [pinataData, setPinataData] = useState<any[]>([]);
+  const [isLoadingData, setIsLoadingData] = useState(false);
 
   // Get user's LAND token balance
   const { data: landBalance } = useReadContract({
@@ -50,19 +51,82 @@ const UserDashboard = () => {
     args: [address ?? '0x0000000000000000000000000000000000000000'],
   });
 
+  // Load data from IPFS with fallback to localStorage
+  const loadData = async () => {
+    setIsLoadingData(true);
+    try {
+      // Load parcels from IPFS first, fallback to sync version
+      const allParcels = await getParcels().catch(() => getParcelsSync());
+      setParcels(allParcels);
+      
+      // Load prices from IPFS first, fallback to sync version
+      const prices = await getPrices().catch(() => getPricesSync());
+      const priceMap: Record<string, number> = {};
+      Object.keys(prices).forEach(parcelId => {
+        priceMap[parcelId] = prices[parcelId].currentPrice;
+      });
+      setCurrentPrices(priceMap);
+    } catch (error) {
+      console.error('Error loading data:', error);
+      // Fallback to sync versions
+      setParcels(getParcelsSync());
+      const prices = getPricesSync();
+      const priceMap: Record<string, number> = {};
+      Object.keys(prices).forEach(parcelId => {
+        priceMap[parcelId] = prices[parcelId].currentPrice;
+      });
+      setCurrentPrices(priceMap);
+    } finally {
+      setIsLoadingData(false);
+    }
+  };
+
+  // Force refresh data from IPFS
+  const refreshDataFromIPFS = async () => {
+    setIsLoadingData(true);
+    try {
+      // Force refresh from IPFS
+      const [refreshedParcels, refreshedPrices] = await Promise.all([
+        refreshParcelsFromIPFS(),
+        refreshPricesFromIPFS()
+      ]);
+      
+      setParcels(refreshedParcels);
+      
+      const priceMap: Record<string, number> = {};
+      Object.keys(refreshedPrices).forEach(parcelId => {
+        priceMap[parcelId] = refreshedPrices[parcelId].currentPrice;
+      });
+      setCurrentPrices(priceMap);
+      
+      toast({
+        title: "Data Refreshed",
+        description: "Successfully synced latest data from IPFS",
+      });
+    } catch (error) {
+      console.error('Error refreshing from IPFS:', error);
+      toast({
+        title: "Refresh Failed",
+        description: "Could not sync from IPFS, using local data",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingData(false);
+    }
+  };
+
   // Fetch Pinata data for user's address
   useEffect(() => {
     const fetchPinataData = async () => {
       if (!address) return;
       
       try {
-        // This would be your actual Pinata API call
-        // For now, we'll simulate it with the existing data
-        const userTrades = getUserTrades(address);
+        // Use async version with fallback to sync
+        const userTrades = await getUserTrades(address).catch(() => getUserTradesSync(address));
         const userParcels = userTrades
           .filter(t => t.buyer.toLowerCase() === address.toLowerCase())
           .map(t => {
-            const parcel = getParcels().find(p => p.id === t.parcelId);
+            const parcel = parcels.find(p => p.id === t.parcelId);
             return {
               ...parcel,
               tradeData: t,
@@ -79,21 +143,10 @@ const UserDashboard = () => {
     fetchPinataData();
   }, [address, parcels]);
 
-  // Load real data
+  // Load real data on component mount and set up refresh intervals
   useEffect(() => {
-    const loadData = () => {
-      const allParcels = getParcels();
-      setParcels(allParcels);
-      
-      const prices = getPrices();
-      const priceMap: Record<string, number> = {};
-      Object.keys(prices).forEach(parcelId => {
-        priceMap[parcelId] = prices[parcelId].currentPrice;
-      });
-      setCurrentPrices(priceMap);
-    };
-
     loadData();
+    
     // Refresh data every 30 seconds
     const interval = setInterval(loadData, 30000);
     
@@ -135,7 +188,7 @@ const UserDashboard = () => {
   const userStats = useMemo(() => {
     if (!address) return { totalInvested: '$0', landParcels: 0, portfolioValue: '$0', totalReturn: '0%' };
     
-    const userTrades = getUserTrades(address);
+    const userTrades = getUserTradesSync(address);
     let totalInvested = 0;
     let totalValue = 0;
     const holdings: Record<string, number> = {};
@@ -155,7 +208,7 @@ const UserDashboard = () => {
     // Calculate current portfolio value
     Object.entries(holdings).forEach(([parcelId, units]) => {
       if (units > 0) {
-        const price = getPriceOrDefault(parcelId, 2);
+        const price = getPriceOrDefaultSync(parcelId, 2);
         totalValue += units * price;
       }
     });
@@ -177,7 +230,7 @@ const UserDashboard = () => {
     return parcels
       .filter(p => (p.remainingUnits ?? p.units) > 0)
       .map(land => {
-        const price = getPriceOrDefault(land.id, 2);
+        const price = getPriceOrDefaultSync(land.id, 2);
         return {
           id: land.id,
           location: land.location,
@@ -193,7 +246,7 @@ const UserDashboard = () => {
   const availableSellOrders = useMemo(() => {
     if (!address) return [];
     
-    const allTrades = getTrades();
+    const allTrades = getTradesSync();
     const sellOrders = allTrades.filter(trade => 
       trade.side === 'sell' && 
       trade.buyer === 'listing' && // This indicates it's a listing
@@ -218,7 +271,7 @@ const UserDashboard = () => {
   const userSellOrders = useMemo(() => {
     if (!address) return [];
     
-    const allTrades = getTrades();
+    const allTrades = getTradesSync();
     const sellOrders = allTrades.filter(trade => 
       trade.side === 'sell' && 
       trade.buyer === 'listing' && // This indicates it's a listing
@@ -240,7 +293,7 @@ const UserDashboard = () => {
   const userInvestments = useMemo(() => {
     if (!address) return [];
     
-    const userTrades = getUserTrades(address);
+    const userTrades = getUserTradesSync(address);
     const holdings: Record<string, number> = {};
     
     userTrades.forEach(trade => {
@@ -258,7 +311,7 @@ const UserDashboard = () => {
         const parcel = parcels.find(p => p.id === parcelId);
         if (!parcel) return null;
         
-        const currentPrice = getPriceOrDefault(parcelId, 2);
+        const currentPrice = getPriceOrDefaultSync(parcelId, 2);
         const avgBuyPrice = userTrades
           .filter(t => t.buyer.toLowerCase() === address.toLowerCase() && t.parcelId === parcelId)
           .reduce((sum, t) => sum + t.pricePerUnit, 0) / userTrades.filter(t => t.buyer.toLowerCase() === address.toLowerCase() && t.parcelId === parcelId).length;
@@ -307,7 +360,7 @@ const UserDashboard = () => {
     setIsProcessing(true);
     
     try {
-      const pricePerUnit = getPriceOrDefault(parcelId, 2);
+      const pricePerUnit = await getPriceOrDefault(parcelId, 2).catch(() => getPriceOrDefaultSync(parcelId, 2));
       const totalCost = units * pricePerUnit;
       
       // Check if user has enough LAND tokens
@@ -348,13 +401,13 @@ const UserDashboard = () => {
         timestamp: new Date().toISOString(),
       };
       
-      addTrade(trade);
+      await addTrade(trade);
       
       // Update parcel remaining units
-      decrementParcelUnits(parcelId, units);
+      await decrementParcelUnits(parcelId, units);
       
-      // Refresh data
-      setParcels(getParcels());
+      // Refresh data from IPFS to ensure synchronization
+      await refreshDataFromIPFS();
       
       toast({
         title: "Purchase Successful!",
@@ -376,21 +429,11 @@ const UserDashboard = () => {
     }
   };
 
-  const handleBuyTokens = async () => {
+  const handleBuyFromOrder = async (orderId: string, units: number) => {
     if (!address) {
       toast({
         title: "Error",
         description: "Please connect your wallet first",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const amount = Number(buyTokensForm.amount);
-    if (amount <= 0) {
-      toast({
-        title: "Error",
-        description: "Please enter a valid amount",
         variant: "destructive",
       });
       return;
@@ -399,168 +442,13 @@ const UserDashboard = () => {
     setIsProcessing(true);
     
     try {
-      // Simulate buying tokens from admin
-      // In a real scenario, this would involve a smart contract call
-      toast({
-        title: "Token Purchase Request",
-        description: `Requested ${amount} LAND tokens from admin. Please wait for approval.`,
-      });
-
-      setBuyTokensForm({ amount: '' });
-    } catch (error) {
-      toast({
-        title: "Purchase Failed",
-        description: error instanceof Error ? error.message : 'Unknown error occurred',
-        variant: "destructive",
-      });
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleListForSale = async () => {
-    if (!address) {
-      toast({
-        title: "Error",
-        description: "Please connect your wallet first",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const { parcelId, units, pricePerUnit } = listForSaleForm;
-    if (!parcelId || !units || !pricePerUnit) {
-      toast({
-        title: "Error",
-        description: "Please fill in all fields",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const unitsNum = Number(units);
-    const priceNum = Number(pricePerUnit);
-
-    if (unitsNum <= 0 || priceNum <= 0) {
-      toast({
-        title: "Error",
-        description: "Please enter valid amounts",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // Check if user has enough units to sell
-    const userTrades = getUserTrades(address);
-    const holdings: Record<string, number> = {};
-    
-    userTrades.forEach(trade => {
-      if (trade.buyer.toLowerCase() === address.toLowerCase()) {
-        holdings[trade.parcelId] = (holdings[trade.parcelId] || 0) + trade.units;
-      }
-      if (trade.seller.toLowerCase() === address.toLowerCase()) {
-        holdings[trade.parcelId] = (holdings[trade.parcelId] || 0) - trade.units;
-      }
-    });
-
-    const availableUnits = holdings[parcelId] || 0;
-    if (availableUnits < unitsNum) {
-      toast({
-        title: "Insufficient Units",
-        description: `You only have ${availableUnits} units available for sale`,
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // Create sell listing
-    const trade: any = {
-      id: `${Date.now()}`,
-      parcelId,
-      buyer: 'listing', // Indicates it's a listing
-      seller: address,
-      units: unitsNum,
-      pricePerUnit: priceNum,
-      total: unitsNum * priceNum,
-      side: 'sell',
-      txHash: 'pending',
-      timestamp: new Date().toISOString(),
-    };
-    
-    addTrade(trade);
-    
-    toast({
-      title: "Listed for Sale",
-      description: `${unitsNum} units listed at ${priceNum} LAND per unit`,
-    });
-
-    setListForSaleForm({ parcelId: '', units: '', pricePerUnit: '' });
-  };
-
-  const handleBuyOrder = async (orderId: string) => {
-    if (!address) {
-      toast({
-        title: "Error",
-        description: "Please connect your wallet first",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const units = orderForms[orderId];
-    if (!units) {
-      toast({
-        title: "Error",
-        description: "Please enter units to buy",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const unitsNum = Number(units);
-    if (unitsNum <= 0) {
-      toast({
-        title: "Error",
-        description: "Please enter a valid number of units",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setIsProcessing(true);
-    
-    try {
-      const order = getTrades().find(t => t.id === orderId);
+      const order = availableSellOrders.find(o => o.id === orderId);
       if (!order) {
-        toast({
-          title: "Error",
-          description: "Order not found",
-          variant: "destructive",
-        });
-        return;
+        throw new Error('Order not found');
       }
 
-      if (order.seller.toLowerCase() === address.toLowerCase()) {
-        toast({
-          title: "Error",
-          description: "You cannot buy your own order",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      if (order.units < unitsNum) {
-        toast({
-          title: "Error",
-          description: `Only ${order.units} units available for this order`,
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const pricePerUnit = order.pricePerUnit;
-      const totalCost = unitsNum * pricePerUnit;
-
+      const totalCost = units * order.pricePerUnit;
+      
       // Check if user has enough LAND tokens
       const userBalance = landBalance ? Number(formatUnits(landBalance as bigint, 18)) : 0;
       if (userBalance < totalCost) {
@@ -591,42 +479,116 @@ const UserDashboard = () => {
         parcelId: order.parcelId,
         buyer: address,
         seller: order.seller,
-        units: unitsNum,
-        pricePerUnit: pricePerUnit,
+        units,
+        pricePerUnit: order.pricePerUnit,
         total: totalCost,
         side: 'buy',
         txHash,
         timestamp: new Date().toISOString(),
       };
       
-      addTrade(trade);
+      await addTrade(trade);
       
-      // Update the original sell order to reduce available units
-      updateOrderUnits(orderId, unitsNum);
+      // Update the sell order units
+      await updateOrderUnits(orderId, order.units - units);
       
       // Refresh data
-      setParcels(getParcels());
-      
-      // Force refresh of trades data
-      const event = new Event('storage');
-      window.dispatchEvent(event);
+      await refreshDataFromIPFS();
       
       toast({
-        title: "Order Filled",
-        description: `Bought ${unitsNum} units from order ${orderId} for ${totalCost} LAND tokens`,
-      });
-
-      // Reset form for this specific order
-      setOrderForms(prev => {
-        const newForms = { ...prev };
-        delete newForms[orderId];
-        return newForms;
+        title: "Purchase Successful!",
+        description: `Bought ${units} units from seller for ${totalCost} LAND tokens`,
       });
 
     } catch (error) {
-      console.error('Error buying order:', error);
+      console.error('Error buying from order:', error);
       toast({
-        title: "Order Failed",
+        title: "Purchase Failed",
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleListForSale = async () => {
+    if (!address || !listForSaleForm.parcelId || !listForSaleForm.units || !listForSaleForm.pricePerUnit) {
+      toast({
+        title: "Error",
+        description: "Please fill in all fields",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const units = parseInt(listForSaleForm.units);
+    const pricePerUnit = parseFloat(listForSaleForm.pricePerUnit);
+
+    if (units <= 0 || pricePerUnit <= 0) {
+      toast({
+        title: "Error",
+        description: "Please enter valid positive numbers",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsProcessing(true);
+    
+    try {
+      // Check if user owns enough units
+      const userTrades = getUserTradesSync(address);
+      const holdings: Record<string, number> = {};
+      
+      userTrades.forEach(trade => {
+        if (trade.buyer.toLowerCase() === address.toLowerCase()) {
+          holdings[trade.parcelId] = (holdings[trade.parcelId] || 0) + trade.units;
+        }
+        if (trade.seller.toLowerCase() === address.toLowerCase()) {
+          holdings[trade.parcelId] = (holdings[trade.parcelId] || 0) - trade.units;
+        }
+      });
+
+      const ownedUnits = holdings[listForSaleForm.parcelId] || 0;
+      if (ownedUnits < units) {
+        toast({
+          title: "Insufficient Units",
+          description: `You only own ${ownedUnits} units of this parcel`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Create sell order
+      const sellOrder: any = {
+        id: `${Date.now()}`,
+        parcelId: listForSaleForm.parcelId,
+        buyer: 'listing', // Special marker for listings
+        seller: address,
+        units,
+        pricePerUnit,
+        total: units * pricePerUnit,
+        side: 'sell',
+        txHash: '',
+        timestamp: new Date().toISOString(),
+      };
+      
+      await addTrade(sellOrder);
+      await refreshDataFromIPFS();
+      
+      toast({
+        title: "Listed Successfully!",
+        description: `Listed ${units} units for sale at $${pricePerUnit} per unit`,
+      });
+
+      // Reset form
+      setListForSaleForm({ parcelId: '', units: '', pricePerUnit: '' });
+
+    } catch (error) {
+      console.error('Error listing for sale:', error);
+      toast({
+        title: "Listing Failed",
         description: error instanceof Error ? error.message : 'Unknown error occurred',
         variant: "destructive",
       });
@@ -636,57 +598,19 @@ const UserDashboard = () => {
   };
 
   const handleCancelOrder = async (orderId: string) => {
-    if (!address) {
-      toast({
-        title: "Error",
-        description: "Please connect your wallet first",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const order = getTrades().find(t => t.id === orderId);
-    if (!order) {
-      toast({
-        title: "Error",
-        description: "Order not found",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (order.seller.toLowerCase() !== address.toLowerCase()) {
-      toast({
-        title: "Error",
-        description: "You can only cancel your own orders",
-        variant: "destructive",
-      });
-      return;
-    }
-
     setIsProcessing(true);
-    
     try {
-      // Since the smart contract doesn't have a cancelOrder function,
-      // we'll just remove the order from local storage
-      removeOrder(orderId);
-      
-      // Refresh data
-      setParcels(getParcels());
-      
-      // Force refresh of trades data
-      const event = new Event('storage');
-      window.dispatchEvent(event);
+      await removeOrder(orderId);
+      await refreshDataFromIPFS();
       
       toast({
         title: "Order Cancelled",
-        description: `Your order ${orderId} has been cancelled successfully.`,
+        description: "Your sell order has been cancelled",
       });
-
     } catch (error) {
       console.error('Error cancelling order:', error);
       toast({
-        title: "Cancel Failed",
+        title: "Cancellation Failed",
         description: error instanceof Error ? error.message : 'Unknown error occurred',
         variant: "destructive",
       });
@@ -695,652 +619,390 @@ const UserDashboard = () => {
     }
   };
 
-  const refreshData = () => {
-    setParcels(getParcels());
-    const prices = getPrices();
-    const priceMap: Record<string, number> = {};
-    Object.keys(prices).forEach(parcelId => {
-      priceMap[parcelId] = prices[parcelId].currentPrice;
-    });
-    setCurrentPrices(priceMap);
-    
-    // Clear all order forms when refreshing
-    setOrderForms({});
-    
-    // Force refresh of all computed values
-    const event = new Event('storage');
-    window.dispatchEvent(event);
-    
-    toast({
-      title: "Data Refreshed",
-      description: "Portfolio data has been updated",
-    });
-  };
-
-  const openInvestmentDetails = (investment: any) => {
-    setSelectedInvestment(investment);
-  };
+  if (!isConnected) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 flex items-center justify-center">
+        <Card className="w-96">
+          <CardHeader>
+            <CardTitle className="text-center">Access Denied</CardTitle>
+          </CardHeader>
+          <CardContent className="text-center">
+            <p className="mb-4">Please connect your wallet to access the user dashboard.</p>
+            <Button onClick={() => navigate('/')}>Go Back</Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-white via-gray-50 to-gray-100 p-6">
-      <div className="container mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 p-6">
+      <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="flex justify-between items-center mb-8">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-gradient-to-br from-gray-900 to-gray-700 rounded-xl flex items-center justify-center shadow-lg">
-              <Landmark className="w-7 h-7 text-white" />
-            </div>
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">User Dashboard</h1>
-              <p className="text-gray-600">Manage your land investments</p>
-            </div>
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">User Dashboard</h1>
+            <p className="text-gray-600">Welcome back, {address?.slice(0, 6)}...{address?.slice(-4)}</p>
           </div>
-          
-          <div className="flex items-center gap-4">
-            <div className="text-right">
-              <p className="text-sm text-gray-600">Connected as User</p>
-              <p className="text-sm font-mono text-gray-700">{address?.slice(0, 8)}...{address?.slice(-6)}</p>
-              <p className="text-xs text-gray-500">LAND Balance: {landBalance ? formatUnits(landBalance as bigint, 18) : '0'}</p>
-            </div>
-            <Button variant="outline" onClick={handleDisconnect} className="gap-2 border-gray-300 text-gray-700 hover:bg-gray-50">
-              <LogOut className="w-4 h-4" />
+          <div className="flex gap-2">
+            <Button
+              onClick={refreshDataFromIPFS}
+              disabled={isLoadingData}
+              variant="outline"
+              size="sm"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${isLoadingData ? 'animate-spin' : ''}`} />
+              Refresh Data
+            </Button>
+            <Button onClick={handleDisconnect} variant="outline">
+              <LogOut className="h-4 w-4 mr-2" />
               Disconnect
             </Button>
           </div>
         </div>
 
         {/* Stats Cards */}
-        <div className="grid md:grid-cols-4 gap-6 mb-8">
-          <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <Card>
             <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-600 text-sm">Total Invested</p>
+              <div className="flex items-center">
+                <DollarSign className="h-8 w-8 text-green-600" />
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-gray-600">Total Invested</p>
                   <p className="text-2xl font-bold text-gray-900">{userStats.totalInvested}</p>
                 </div>
-                <DollarSign className="w-8 h-8 text-gray-700" />
               </div>
             </CardContent>
           </Card>
-          
-          <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300">
+
+          <Card>
             <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-600 text-sm">Land Parcels</p>
+              <div className="flex items-center">
+                <Landmark className="h-8 w-8 text-blue-600" />
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-gray-600">Land Parcels</p>
                   <p className="text-2xl font-bold text-gray-900">{userStats.landParcels}</p>
                 </div>
-                <Landmark className="w-8 h-8 text-gray-700" />
               </div>
             </CardContent>
           </Card>
-          
-          <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300">
+
+          <Card>
             <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-600 text-sm">Portfolio Value</p>
+              <div className="flex items-center">
+                <TrendingUp className="h-8 w-8 text-purple-600" />
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-gray-600">Portfolio Value</p>
                   <p className="text-2xl font-bold text-gray-900">{userStats.portfolioValue}</p>
                 </div>
-                <TrendingUp className="w-8 h-8 text-gray-700" />
               </div>
             </CardContent>
           </Card>
-          
-          <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300">
+
+          <Card>
             <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-600 text-sm">Total Return</p>
-                  <p className={`text-2xl font-bold ${userStats.totalReturn.startsWith('+') ? 'text-green-600' : 'text-red-600'}`}>
+              <div className="flex items-center">
+                <Users className="h-8 w-8 text-orange-600" />
+                <div className="ml-4">
+                  <p className="text-sm font-medium text-gray-600">Total Return</p>
+                  <p className={`text-2xl font-bold ${userStats.totalReturn.startsWith('+') ? 'text-green-600' : userStats.totalReturn.startsWith('-') ? 'text-red-600' : 'text-gray-900'}`}>
                     {userStats.totalReturn}
                   </p>
                 </div>
-                <Users className="w-8 h-8 text-gray-700" />
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Buy Tokens Section */}
-        <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300 mb-8">
+        {/* LAND Token Balance */}
+        <Card className="mb-8">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-gray-900">
-              <Plus className="w-5 h-5" />
-              Buy LAND Tokens from Admin
+            <CardTitle className="flex items-center">
+              <Hash className="h-5 w-5 mr-2" />
+              LAND Token Balance
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex gap-4 items-end">
-              <div className="flex-1">
-                <Label htmlFor="tokenAmount" className="text-gray-700">Amount of LAND Tokens</Label>
-                <Input
-                  id="tokenAmount"
-                  type="number"
-                  placeholder="Enter amount"
-                  value={buyTokensForm.amount}
-                  onChange={(e) => setBuyTokensForm({ amount: e.target.value })}
-                  className="mt-1"
-                />
-              </div>
-              <Button 
-                variant="default" 
-                onClick={handleBuyTokens}
-                disabled={isProcessing || !buyTokensForm.amount}
-                className="bg-gray-900 text-white hover:bg-gray-800"
-              >
-                {isProcessing ? 'Processing...' : 'Buy Tokens'}
-              </Button>
-            </div>
+            <p className="text-2xl font-bold text-green-600">
+              {landBalance ? Number(formatUnits(landBalance as bigint, 18)).toFixed(2) : '0.00'} LAND
+            </p>
           </CardContent>
         </Card>
 
-        <div className="grid lg:grid-cols-2 gap-8">
+        {/* Main Content Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Available Lands */}
-          <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300">
+          <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-gray-900">
-                <Eye className="w-5 h-5" />
+              <CardTitle className="flex items-center">
+                <Landmark className="h-5 w-5 mr-2" />
                 Available Lands
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {availableLands.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No lands available for purchase</p>
-              ) : (
-                availableLands.map((land) => (
-                  <div key={land.id} className="p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition-colors">
+            <CardContent>
+              <div className="space-y-4 max-h-96 overflow-y-auto">
+                {availableLands.map((land) => (
+                  <div key={land.id} className="border rounded-lg p-4">
                     <div className="flex justify-between items-start mb-2">
                       <div>
-                        <h3 className="font-semibold text-gray-900">{land.location}</h3>
-                        <p className="text-xs text-gray-500 font-mono">Land ID: #{land.id}</p>
+                        <h3 className="font-semibold">{land.location}</h3>
+                        <p className="text-sm text-gray-600">{land.acres} acres</p>
+                        <p className="text-sm text-gray-600">Available: {land.availableUnits}/{land.totalUnits} units</p>
                       </div>
-                      <span className="text-sm text-gray-600">{land.acres} acres</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4 text-sm mb-3">
-                      <div>
-                        <span className="text-gray-600">Price per Unit:</span>
-                        <span className="ml-2 font-semibold text-gray-900">{land.pricePerUnit} LAND</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Available:</span>
-                        <span className="ml-2 font-semibold text-gray-900">{land.availableUnits}/{land.totalUnits}</span>
+                      <div className="text-right">
+                        <p className="font-bold text-green-600">${land.pricePerUnit}/unit</p>
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      <div className="flex gap-2">
-                        <Input
-                          type="number"
-                          placeholder="Units to buy"
-                          value={buyForm.parcelId === land.id ? buyForm.units : ''}
-                          onChange={(e) => setBuyForm({ parcelId: land.id, units: e.target.value })}
-                          className="flex-1"
-                        />
-                        <Button 
-                          variant="default" 
-                          size="sm" 
-                          className="bg-gray-900 text-white hover:bg-gray-800"
-                          onClick={() => handleBuyLand(land.id, Number(buyForm.units))}
-                          disabled={isProcessing || buyForm.parcelId !== land.id || !buyForm.units}
-                        >
-                          <ShoppingCart className="w-4 h-4 mr-2" />
-                          {isProcessing ? 'Processing...' : 'Buy'}
-                        </Button>
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        Cost: {buyForm.parcelId === land.id && buyForm.units ? 
-                          `${(Number(buyForm.units) * land.pricePerUnit).toFixed(2)} LAND` : 
-                          'Enter units to see cost'
-                        }
-                      </p>
-                    </div>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-
-          {/* User Investments */}
-          <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-gray-900">
-                <TrendingUp className="w-5 h-5" />
-                Your Investments
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {userInvestments.length === 0 ? (
-                <p className="text-gray-500 text-center py-4">No investments yet. Start buying land to see your portfolio!</p>
-              ) : (
-                userInvestments.map((investment) => (
-                  <div key={investment.id} className="p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition-colors">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <h3 className="font-semibold text-gray-900">{investment.location}</h3>
-                        <p className="text-xs text-gray-500 font-mono">Land ID: #{investment.id}</p>
-                      </div>
-                      <span className={`text-sm font-semibold ${investment.return.startsWith('+') ? 'text-green-600' : 'text-red-600'}`}>
-                        {investment.return}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4 text-sm mb-3">
-                      <div>
-                        <span className="text-gray-600">Units:</span>
-                        <span className="ml-2 font-semibold text-gray-900">{investment.units}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Invested:</span>
-                        <span className="ml-2 font-semibold text-gray-900">{investment.invested}</span>
-                      </div>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-gray-600">
-                        Current Value: <span className="font-semibold text-gray-900">{investment.currentValue}</span>
-                      </span>
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        className="border-gray-300 text-gray-700 hover:bg-gray-50"
-                        onClick={() => openInvestmentDetails(investment)}
+                    <div className="flex gap-2 mt-3">
+                      <Input
+                        type="number"
+                        placeholder="Units"
+                        value={buyForm.parcelId === land.id ? buyForm.units : ''}
+                        onChange={(e) => setBuyForm({ parcelId: land.id, units: e.target.value })}
+                        className="flex-1"
+                        max={land.availableUnits}
+                      />
+                      <Button
+                        onClick={() => handleBuyLand(land.id, parseInt(buyForm.units) || 0)}
+                        disabled={isProcessing || !buyForm.units || buyForm.parcelId !== land.id}
+                        size="sm"
                       >
-                        View Details
+                        <ShoppingCart className="h-4 w-4 mr-1" />
+                        Buy
                       </Button>
                     </div>
                   </div>
-                ))
-              )}
+                ))}
+              </div>
             </CardContent>
           </Card>
-        </div>
 
-        {/* List for Sale Section */}
-        <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300 mt-8">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-gray-900">
-              <List className="w-5 h-5" />
-              List Your Land for Sale
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid md:grid-cols-4 gap-4 items-end">
-              <div>
-                <Label htmlFor="sellParcelId" className="text-gray-700">Land ID</Label>
-                <Input
-                  id="sellParcelId"
-                  placeholder="Enter land ID"
-                  value={listForSaleForm.parcelId}
-                  onChange={(e) => setListForSaleForm(prev => ({ ...prev, parcelId: e.target.value }))}
-                  className="mt-1"
-                />
-                <p className="text-xs text-gray-500 mt-1">Available IDs: {userInvestments.map(inv => inv.id).join(', ')}</p>
-              </div>
-              <div>
-                <Label htmlFor="sellUnits" className="text-gray-700">Units to Sell</Label>
-                <Input
-                  id="sellUnits"
-                  type="number"
-                  placeholder="Enter units"
-                  value={listForSaleForm.units}
-                  onChange={(e) => setListForSaleForm(prev => ({ ...prev, units: e.target.value }))}
-                  className="mt-1"
-                />
-                {listForSaleForm.parcelId && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    Available: {(() => {
-                      const userTrades = getUserTrades(address || '');
-                      const holdings: Record<string, number> = {};
-                      userTrades.forEach(trade => {
-                        if (trade.buyer.toLowerCase() === (address || '').toLowerCase()) {
-                          holdings[trade.parcelId] = (holdings[trade.parcelId] || 0) + trade.units;
-                        }
-                        if (trade.seller.toLowerCase() === (address || '').toLowerCase()) {
-                          holdings[trade.parcelId] = (holdings[trade.parcelId] || 0) - trade.units;
-                        }
-                      });
-                      return holdings[listForSaleForm.parcelId] || 0;
-                    })()} units
-                  </p>
-                )}
-              </div>
-              <div>
-                <Label htmlFor="sellPrice" className="text-gray-700">Price per Unit (LAND)</Label>
-                <Input
-                  id="sellPrice"
-                  type="number"
-                  placeholder="Enter price"
-                  value={listForSaleForm.pricePerUnit}
-                  onChange={(e) => setListForSaleForm(prev => ({ ...prev, pricePerUnit: e.target.value }))}
-                  className="mt-1"
-                />
-              </div>
-              <Button 
-                variant="default" 
-                onClick={handleListForSale}
-                disabled={isProcessing || !listForSaleForm.parcelId || !listForSaleForm.units || !listForSaleForm.pricePerUnit}
-                className="bg-gray-900 text-white hover:bg-gray-800"
-              >
-                {isProcessing ? 'Processing...' : 'List for Sale'}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Orders Summary */}
-        <div className="grid md:grid-cols-2 gap-6 mt-8">
-          <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300">
+          {/* Available Sell Orders */}
+          <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-gray-900">
-                <ShoppingCart className="w-5 h-5" />
-                Available Orders from Others
+              <CardTitle className="flex items-center">
+                <List className="h-5 w-5 mr-2" />
+                Available Sell Orders
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-center">
-                <p className="text-3xl font-bold text-gray-900">{availableSellOrders.length}</p>
-                <p className="text-sm text-gray-600">Sell orders available</p>
-                <p className="text-xs text-gray-500 mt-2">
-                  Total units: {availableSellOrders.reduce((sum, order) => sum + order.units, 0)}
-                </p>
+              <div className="space-y-4 max-h-96 overflow-y-auto">
+                {availableSellOrders.map((order) => (
+                  <div key={order.id} className="border rounded-lg p-4">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <h3 className="font-semibold">{order.location}</h3>
+                        <p className="text-sm text-gray-600">{order.acres} acres</p>
+                        <p className="text-sm text-gray-600">Seller: {order.sellerAddress?.slice(0, 6)}...{order.sellerAddress?.slice(-4)}</p>
+                        <p className="text-sm text-gray-600">Available: {order.units} units</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold text-blue-600">${order.pricePerUnit}/unit</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 mt-3">
+                      <Input
+                        type="number"
+                        placeholder="Units"
+                        value={orderForms[order.id] || ''}
+                        onChange={(e) => setOrderForms({ ...orderForms, [order.id]: e.target.value })}
+                        className="flex-1"
+                        max={order.units}
+                      />
+                      <Button
+                        onClick={() => handleBuyFromOrder(order.id, parseInt(orderForms[order.id]) || 0)}
+                        disabled={isProcessing || !orderForms[order.id]}
+                        size="sm"
+                      >
+                        <ShoppingCart className="h-4 w-4 mr-1" />
+                        Buy
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {availableSellOrders.length === 0 && (
+                  <p className="text-gray-500 text-center py-4">No sell orders available</p>
+                )}
               </div>
             </CardContent>
           </Card>
 
-          <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300">
+          {/* List Land for Sale */}
+          <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-gray-900">
-                <List className="w-5 h-5" />
+              <CardTitle className="flex items-center">
+                <Plus className="h-5 w-5 mr-2" />
+                List Land for Sale
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="sellParcelId">Select Parcel</Label>
+                  <select
+                    id="sellParcelId"
+                    value={listForSaleForm.parcelId}
+                    onChange={(e) => setListForSaleForm({ ...listForSaleForm, parcelId: e.target.value })}
+                    className="w-full p-2 border rounded-md"
+                  >
+                    <option value="">Select a parcel you own</option>
+                    {userInvestments.map((investment) => (
+                      <option key={investment.id} value={investment.id}>
+                        {investment.location} ({investment.units} units owned)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="sellUnits">Units to Sell</Label>
+                  <Input
+                    id="sellUnits"
+                    type="number"
+                    value={listForSaleForm.units}
+                    onChange={(e) => setListForSaleForm({ ...listForSaleForm, units: e.target.value })}
+                    placeholder="Number of units"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="sellPrice">Price per Unit ($)</Label>
+                  <Input
+                    id="sellPrice"
+                    type="number"
+                    step="0.01"
+                    value={listForSaleForm.pricePerUnit}
+                    onChange={(e) => setListForSaleForm({ ...listForSaleForm, pricePerUnit: e.target.value })}
+                    placeholder="Price per unit"
+                  />
+                </div>
+                <Button
+                  onClick={handleListForSale}
+                  disabled={isProcessing || !listForSaleForm.parcelId || !listForSaleForm.units || !listForSaleForm.pricePerUnit}
+                  className="w-full"
+                >
+                  List for Sale
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Your Sell Orders */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center">
+                <Clock className="h-5 w-5 mr-2" />
                 Your Sell Orders
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-center">
-                <p className="text-3xl font-bold text-gray-900">{userSellOrders.length}</p>
-                <p className="text-sm text-gray-600">Orders you've listed</p>
-                <p className="text-xs text-gray-500 mt-2">
-                  Total units: {userSellOrders.reduce((sum, order) => sum + order.units, 0)}
-                </p>
+              <div className="space-y-4 max-h-96 overflow-y-auto">
+                {userSellOrders.map((order) => (
+                  <div key={order.id} className="border rounded-lg p-4">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <h3 className="font-semibold">{order.location}</h3>
+                        <p className="text-sm text-gray-600">{order.acres} acres</p>
+                        <p className="text-sm text-gray-600">Units: {order.units}</p>
+                        <p className="text-sm text-gray-600">Price: ${order.pricePerUnit}/unit</p>
+                      </div>
+                      <Button
+                        onClick={() => handleCancelOrder(order.id)}
+                        disabled={isProcessing}
+                        variant="destructive"
+                        size="sm"
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {userSellOrders.length === 0 && (
+                  <p className="text-gray-500 text-center py-4">No active sell orders</p>
+                )}
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Available Sell Orders */}
-        <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300 mt-8">
+        {/* Your Investments */}
+        <Card className="mt-8">
           <CardHeader>
-            <div className="flex justify-between items-center">
-              <CardTitle className="flex items-center gap-2 text-gray-900">
-                <ShoppingCart className="w-5 h-5" />
-                Available Sell Orders from Other Users
-              </CardTitle>
-              {Object.keys(orderForms).length > 0 && (
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  className="border-gray-300 text-gray-700 hover:bg-gray-50"
-                  onClick={() => setOrderForms({})}
-                >
-                  Clear All Forms
-                </Button>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {availableSellOrders.length === 0 ? (
-              <p className="text-gray-500 text-center py-4">No available sell orders yet.</p>
-            ) : (
-              availableSellOrders.map((order) => (
-                <div key={order.id} className="p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition-colors">
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <h3 className="font-semibold text-gray-900">{order.location}</h3>
-                      <p className="text-xs text-gray-500 font-mono">Order ID: #{order.id} | Land ID: #{order.parcelId}</p>
-                    </div>
-                    <span className="text-sm text-gray-600">Seller: {order.sellerAddress.slice(0, 8)}...{order.sellerAddress.slice(-6)}</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 text-sm mb-3">
-                    <div>
-                      <span className="text-gray-600">Available Units:</span>
-                      <span className="ml-2 font-semibold text-gray-900">{order.units}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Price per Unit:</span>
-                      <span className="ml-2 font-semibold text-gray-900">{order.pricePerUnit} LAND</span>
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    <div className="flex gap-2">
-                      <Input
-                        type="number"
-                        placeholder="Units to buy"
-                        value={orderForms[order.id] || ''}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          // Allow empty value for clearing
-                          if (value === '') {
-                            setOrderForms(prev => ({ ...prev, [order.id]: '' }));
-                            return;
-                          }
-                          
-                          const numValue = Number(value);
-                          // Allow any positive number, validation will happen on button click
-                          if (numValue >= 0 && numValue <= order.units) {
-                            setOrderForms(prev => ({ ...prev, [order.id]: value }));
-                          }
-                        }}
-                        onKeyDown={(e) => {
-                          // Allow backspace, delete, arrow keys, and numbers
-                          if (['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.key)) {
-                            return;
-                          }
-                          // Allow numbers and decimal point
-                          if (/[0-9]/.test(e.key)) {
-                            return;
-                          }
-                          e.preventDefault();
-                        }}
-                        className="flex-1"
-                        min="1"
-                        max={order.units}
-                      />
-                      <Button 
-                        variant="default" 
-                        size="sm" 
-                        className="bg-gray-900 text-white hover:bg-gray-800"
-                        onClick={() => handleBuyOrder(order.id)}
-                        disabled={isProcessing || !orderForms[order.id] || Number(orderForms[order.id]) > order.units}
-                      >
-                        <ShoppingCart className="w-4 h-4 mr-2" />
-                        {isProcessing ? 'Processing...' : 'Buy Units'}
-                      </Button>
-                      {orderForms[order.id] && (
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          className="border-gray-300 text-gray-700 hover:bg-gray-50"
-                          onClick={() => setOrderForms(prev => ({ ...prev, [order.id]: '' }))}
-                        >
-                          Clear
-                        </Button>
-                      )}
-                    </div>
-                    {orderForms[order.id] && (
-                      <p className="text-xs text-gray-500">
-                        Cost: {Number(orderForms[order.id]) * order.pricePerUnit} LAND
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        {/* User's Own Sell Orders */}
-        <Card className="bg-white border-gray-200 shadow-sm hover:shadow-lg transition-all duration-300 mt-8">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-gray-900">
-              <List className="w-5 h-5" />
-              Your Sell Orders
+            <CardTitle className="flex items-center">
+              <TrendingUp className="h-5 w-5 mr-2" />
+              Your Investments
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {userSellOrders.length === 0 ? (
-              <p className="text-gray-500 text-center py-4">You haven't listed any land for sale yet.</p>
-            ) : (
-              userSellOrders.map((order) => (
-                <div key={order.id} className="p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition-colors">
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <h3 className="font-semibold text-gray-900">{order.location}</h3>
-                      <p className="text-xs text-gray-500 font-mono">Order ID: #{order.id} | Land ID: #{order.parcelId}</p>
-                    </div>
-                    <span className="text-sm text-gray-600">Listed: {new Date(order.timestamp).toLocaleDateString()}</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 text-sm mb-3">
-                    <div>
-                      <span className="text-gray-600">Units Listed:</span>
-                      <span className="ml-2 font-semibold text-gray-900">{order.units}</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Price per Unit:</span>
-                      <span className="ml-2 font-semibold text-gray-900">{order.pricePerUnit} LAND</span>
-                    </div>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">
-                      Total Value: <span className="font-semibold text-gray-900">{order.total} LAND</span>
-                    </span>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      className="border-red-300 text-red-700 hover:bg-red-50"
-                      onClick={() => handleCancelOrder(order.id)}
-                      disabled={isProcessing}
-                    >
-                      {isProcessing ? 'Processing...' : 'Cancel Order'}
-                    </Button>
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-
-
-        {/* Refresh Button */}
-        <div className="mt-8 text-center">
-          <Button 
-            variant="outline" 
-            onClick={refreshData}
-            className="border-gray-300 text-gray-700 hover:bg-gray-50"
-          >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh Data
-          </Button>
-        </div>
-      </div>
-
-      {/* Investment Details Dialog */}
-      <Dialog open={!!selectedInvestment} onOpenChange={() => setSelectedInvestment(null)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Landmark className="w-5 h-5" />
-              Investment Details - {selectedInvestment?.location}
-            </DialogTitle>
-          </DialogHeader>
-          {selectedInvestment && (
-            <div className="space-y-6">
-              {/* Investment Summary */}
-              <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
-                <div>
-                  <p className="text-sm text-gray-600">Total Units</p>
-                  <p className="text-lg font-semibold text-gray-900">{selectedInvestment.units}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Total Invested</p>
-                  <p className="text-lg font-semibold text-gray-900">{selectedInvestment.invested}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Current Value</p>
-                  <p className="text-lg font-semibold text-gray-900">{selectedInvestment.currentValue}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-600">Total Return</p>
-                  <p className={`text-lg font-semibold ${selectedInvestment.return.startsWith('+') ? 'text-green-600' : 'text-red-600'}`}>
-                    {selectedInvestment.return}
-                  </p>
-                </div>
-              </div>
-
-              {/* Transaction History */}
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-3">Transaction History</h3>
-                <div className="space-y-3">
-                  {selectedInvestment.tradeHistory?.map((trade: any, index: number) => (
-                    <div key={index} className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-3 h-3 rounded-full ${trade.side === 'buy' ? 'bg-green-500' : 'bg-red-500'}`} />
-                        <div>
-                          <p className="font-medium text-gray-900">
-                            {trade.side === 'buy' ? 'Purchased' : 'Sold'} {trade.units} units
-                          </p>
-                          <p className="text-sm text-gray-600">
-                            Price: {trade.pricePerUnit} LAND per unit
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm text-gray-600">
-                          <Clock className="w-4 h-4 inline mr-1" />
-                          {new Date(trade.timestamp).toLocaleDateString()}
-                        </p>
-                        <p className="text-sm text-gray-600">
-                          <Clock className="w-4 h-4 inline mr-1" />
-                          {new Date(trade.timestamp).toLocaleTimeString()}
-                        </p>
-                        {trade.txHash && trade.txHash !== 'pending' && (
-                          <p className="text-xs text-gray-500">
-                            <Hash className="w-3 h-3 inline mr-1" />
-                            {trade.txHash.slice(0, 8)}...{trade.txHash.slice(-6)}
-                          </p>
-                        )}
-                      </div>
-                    </div>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b">
+                    <th className="text-left p-2">Location</th>
+                    <th className="text-left p-2">Units Owned</th>
+                    <th className="text-left p-2">Amount Invested</th>
+                    <th className="text-left p-2">Current Value</th>
+                    <th className="text-left p-2">Return</th>
+                    <th className="text-left p-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {userInvestments.map((investment) => (
+                    <tr key={investment.id} className="border-b">
+                      <td className="p-2">{investment.location}</td>
+                      <td className="p-2">{investment.units}</td>
+                      <td className="p-2">{investment.invested}</td>
+                      <td className="p-2">{investment.currentValue}</td>
+                      <td className={`p-2 font-semibold ${investment.return.startsWith('+') ? 'text-green-600' : investment.return.startsWith('-') ? 'text-red-600' : 'text-gray-900'}`}>
+                        {investment.return}
+                      </td>
+                      <td className="p-2">
+                        <Dialog>
+                          <DialogTrigger asChild>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setSelectedInvestment(investment)}
+                            >
+                              <Eye className="h-4 w-4 mr-1" />
+                              View
+                            </Button>
+                          </DialogTrigger>
+                          <DialogContent>
+                            <DialogHeader>
+                              <DialogTitle>Investment Details - {investment.location}</DialogTitle>
+                            </DialogHeader>
+                            <div className="space-y-4">
+                              <div>
+                                <h4 className="font-semibold mb-2">Trade History</h4>
+                                <div className="space-y-2 max-h-60 overflow-y-auto">
+                                  {investment.tradeHistory.map((trade) => (
+                                    <div key={trade.id} className="border rounded p-2 text-sm">
+                                      <div className="flex justify-between">
+                                        <span className={trade.side === 'buy' ? 'text-green-600' : 'text-red-600'}>
+                                          {trade.side.toUpperCase()}
+                                        </span>
+                                        <span>{new Date(trade.timestamp).toLocaleDateString()}</span>
+                                      </div>
+                                      <div>Units: {trade.units} @ ${trade.pricePerUnit}/unit</div>
+                                      <div>Total: ${trade.total}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </DialogContent>
+                        </Dialog>
+                      </td>
+                    </tr>
                   ))}
-                </div>
-              </div>
-
-              {/* Pinata Data */}
-              {pinataData.find(p => p.id === selectedInvestment.id) && (
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-3">Land Details</h3>
-                  <div className="p-4 bg-gray-50 rounded-lg">
-                    <p className="text-sm text-gray-600 mb-2">
-                      <strong>Location:</strong> {pinataData.find(p => p.id === selectedInvestment.id)?.location}
-                    </p>
-                    <p className="text-sm text-gray-600 mb-2">
-                      <strong>Acres:</strong> {pinataData.find(p => p.id === selectedInvestment.id)?.acres}
-                    </p>
-                    <p className="text-sm text-gray-600 mb-2">
-                      <strong>Metadata:</strong> 
-                      <a 
-                        href={pinataData.find(p => p.id === selectedInvestment.id)?.pinataUrl} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:text-blue-800 underline ml-2"
-                      >
-                        View on IPFS
-                      </a>
-                    </p>
-                  </div>
-                </div>
+                </tbody>
+              </table>
+              {userInvestments.length === 0 && (
+                <p className="text-gray-500 text-center py-8">No investments yet. Start by buying some land!</p>
               )}
             </div>
-          )}
-        </DialogContent>
-      </Dialog>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 };
