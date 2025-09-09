@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Land share app link : https://landshare-protocol.vercel.app/
 
 Land Fractionalization 🌍✨
@@ -34,3 +35,6 @@ Deployment is managed via the Lovable platform 🌐, with options to publish �
 ## License
 
 The Landshare Protocol is open-source under the MIT License 📄.
+=======
+# land
+>>>>>>> 248a0d5391f100ef887ef00072285d08891396c0
